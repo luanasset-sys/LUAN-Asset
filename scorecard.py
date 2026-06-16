@@ -99,6 +99,41 @@ def render(run: RunResult, disclaimer: str) -> str:
     return "\n".join(out)
 
 
+def render_comparison(runs: list[RunResult], disclaimer: str) -> str:
+    """Compact side-by-side table for a watchlist run — scan many names at once."""
+    if not runs:
+        return "No tickers analyzed."
+    headers = ["Ticker", "Price", "Fundamental", "Technical", "Markov", "Macro", "Conflict"]
+    rows = []
+    for r in runs:
+        rows.append([
+            r.ticker,
+            "n/a" if r.price is None else f"${r.price:,.2f}",
+            r.fundamental.verdict,
+            r.technical.verdict,
+            r.markov.metrics.get("Current State", r.markov.verdict),
+            r.macro.verdict,
+            "⚠ YES" if r.disagreement else "—",
+        ])
+    widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
+    sep = "─┼─".join("─" * w for w in widths)
+
+    def fmt(cells):
+        return " │ ".join(c.ljust(widths[i]) for i, c in enumerate(cells))
+
+    lines = [
+        "═" * (sum(widths) + 3 * len(widths)),
+        f" WATCHLIST — {len(runs)} tickers",
+        "═" * (sum(widths) + 3 * len(widths)),
+        fmt(headers),
+        sep,
+        *(fmt(row) for row in rows),
+        "",
+        f" {disclaimer}",
+    ]
+    return "\n".join(lines)
+
+
 def _wrap(text: str, width: int = 96) -> str:
     import textwrap
     return "\n       ".join(textwrap.wrap(text, width)) if text else "(none)"

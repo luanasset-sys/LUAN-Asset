@@ -42,7 +42,16 @@ python hq.py NVDA                 # full run: 4 lenses → Airtable + Sheet → 
 python hq.py XOM --dry-run        # analyze + print only, no writes
 python hq.py VST --no-sheets      # skip the Google Sheet mirror
 python hq.py CEG --no-llm         # free mode: skip Anthropic (macro = FRED only)
+
+# Watchlist mode — analyze many names, get a side-by-side comparison table:
+python hq.py --watchlist NVDA,VST,CEG,XOM
+python hq.py --watchlist tickers.txt        # one ticker per line ('#' comments ok)
+python hq.py --watchlist tickers.txt --full # also print each full scorecard
 ```
+
+Each watchlist ticker still writes its own rows to Airtable/Sheets and its own
+`runs/` snapshot; the comparison table at the end flags which names have
+cross-lens **conflict** (the disagreement is the signal).
 
 Every run also drops a full JSON snapshot in `runs/` — raw data + timestamps, so
 everything is backtestable later.

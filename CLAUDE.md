@@ -36,7 +36,8 @@ independent views, not one number** — where the lenses disagree is the signal.
 ## Layout
 
 ```
-hq.py            CLI orchestrator: fetch → 4 lenses → scorecard → sinks → print
+hq.py            CLI orchestrator: single ticker OR --watchlist; per-ticker
+                 `analyze()` → `persist()` → render; watchlist adds a comparison table
 config.py        env, benchmarks, sector→ETF map, thresholds, DCF assumptions
 models.py        LensResult / RunResult dataclasses + stance constants
 
