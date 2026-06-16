@@ -1,0 +1,12 @@
+# Equity Research HQ — dependencies (all free-tier compatible)
+requests>=2.31           # SEC EDGAR + FRED HTTP
+yfinance>=0.2.40         # daily prices (no key)
+pandas>=2.0              # data wrangling
+numpy>=1.24              # math / linear algebra (Markov steady state)
+python-dotenv>=1.0       # load .env
+
+pyairtable>=2.3          # Airtable writes at runtime
+gspread>=6.0             # Google Sheets mirror
+google-auth>=2.30        # service-account auth for Sheets
+
+anthropic>=0.69          # Macro lens: web search + narrative synthesis

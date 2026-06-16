@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+*.env
+service_account*.json
+google_sa*.json
+credentials*.json
+
+# Run snapshots (local backtest record; keep the dir, ignore contents)
+runs/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
