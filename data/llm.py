@@ -61,18 +61,24 @@ def web_research(prompt: str, system: str | None = None, max_tokens: int = 4000)
     return None
 
 
+def _complete(prompt: str, system: str, max_tokens: int) -> str:
+    """One plain (no-tools) completion. Raises on API error so callers can surface it."""
+    resp = _client().messages.create(
+        model=config.ANTHROPIC_MODEL,
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return _collect_text(resp).strip()
+
+
 def synthesize(prompt: str, system: str | None = None, max_tokens: int = 600) -> str | None:
     """Plain completion used to rephrase computed metrics into natural prose."""
     if not available():
         return None
     try:
-        resp = _client().messages.create(
-            model=config.ANTHROPIC_MODEL,
-            max_tokens=max_tokens,
-            system=system or "You write tight, plain-English equity research notes.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return _collect_text(resp).strip()
+        return _complete(prompt, system or "You write tight, plain-English equity research notes.",
+                         max_tokens)
     except Exception:
         return None
 
@@ -168,6 +174,32 @@ def _report_sections(head: str):
     ]
 
 
+def _api_error_report(head: str, exc: Exception) -> str:
+    """Turn a raw API exception into a plain-English explanation the user can act on."""
+    msg = str(exc)
+    low = msg.lower()
+    if any(k in low for k in ("credit", "billing", "quota", "insufficient", "balance")):
+        hint = ("Your Anthropic account has no usable credit. Go to **console.anthropic.com → "
+                "Settings → Billing**, add a little credit (even $5), then click Generate again.")
+    elif any(k in low for k in ("authentication", "x-api-key", "401", "invalid api key", "unauthorized")):
+        hint = ("Your **ANTHROPIC_API_KEY** is missing or wrong. Open your `.env`, paste the key "
+                "with no quotes or spaces (`ANTHROPIC_API_KEY=sk-ant-...`), save, restart the app, "
+                "and try again.")
+    elif "model" in low and any(k in low for k in ("not", "404", "does not", "unknown")):
+        hint = (f"The configured model (`{config.ANTHROPIC_MODEL}`) isn't available to your API "
+                "key. Tell me and I'll switch the app to a model your account can use.")
+    elif any(k in low for k in ("rate", "429", "overloaded", "529")):
+        hint = "The API is rate-limited or overloaded right now. Wait a minute, then try again."
+    else:
+        hint = ("Check your API key and that the account has credit at console.anthropic.com, "
+                "then try again. If it persists, send me the technical detail below.")
+    return (f"# {head} — report not generated\n\n"
+            f"**The report engine couldn't reach the Anthropic API, so nothing was written.**\n\n"
+            f"> 💡 {hint}\n\n"
+            f"<details><summary>Technical error detail (for debugging)</summary>\n\n"
+            f"```\n{msg[:600]}\n```\n</details>")
+
+
 def deep_dive_report(meta: dict, model_ctx: str, progress=None) -> str | None:
     """Run the full multi-pass deep-dive pipeline. Returns assembled markdown.
 
@@ -188,6 +220,15 @@ def deep_dive_report(meta: dict, model_ctx: str, progress=None) -> str | None:
                 progress(msg)
             except Exception:
                 pass
+
+    # Preflight: one tiny call to surface a real API error (bad key / no credit /
+    # wrong model) up front, instead of silently failing every section after a
+    # 4-minute wait.
+    note("Checking the Anthropic API connection…")
+    try:
+        _complete("Reply with the single word: OK", "You are a connectivity test endpoint.", 8)
+    except Exception as exc:
+        return _api_error_report(head, exc)
 
     note("Researching financials, segments, analysts & recent price action…")
     dossier_fin = web_research(
@@ -227,9 +268,11 @@ def deep_dive_report(meta: dict, model_ctx: str, progress=None) -> str | None:
     sections = _report_sections(head)
     for i, (label, mt, instruction) in enumerate(sections, 1):
         note(f"Writing section {i}/{len(sections) + 1}: {label}…")
-        text = synthesize(base_ctx + "TASK:\n" + instruction,
-                          system=_REPORT_SYSTEM, max_tokens=mt)
-        parts.append(text.strip() if text else f"_({label} unavailable — try regenerating.)_")
+        try:
+            text = _complete(base_ctx + "TASK:\n" + instruction, _REPORT_SYSTEM, mt)
+        except Exception as exc:
+            text = f"_({label} — API error: {str(exc)[:200]})_"
+        parts.append(text.strip() if text else f"_({label} returned empty — try regenerating.)_")
 
     note(f"Writing section {len(sections) + 1}/{len(sections) + 1}: Sources…")
     src = synthesize(
