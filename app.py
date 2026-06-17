@@ -306,49 +306,52 @@ with tabs[2]:
         st.info("The full written report runs on the Anthropic API. Add `ANTHROPIC_API_KEY` to your "
                 "`.env` (with a little account credit), save, and restart — then generate it here.")
     else:
-        st.caption("Claude writes a full report from the computed model + live web search: business & "
-                   "moat, valuation & fair-value range, bull/bear & risks, macro/policy/catalysts. "
-                   "~30–60s; uses your Anthropic key.")
+        st.caption("Claude runs a multi-pass pipeline — web-research dossiers, then "
+                   "section-by-section synthesis grounded in your DCF/WACC model — to produce an "
+                   "institutional-depth deep dive: the central frame, every stock-moving lever, "
+                   "policy by segment, macro, a levels-vs-derivatives sustainability debate, "
+                   "scenarios, dated catalysts, bottom line, and sources. Takes ~2–4 minutes and "
+                   "uses your Anthropic key.")
         key = f"report::{ticker}"
-        if st.button("📝 Generate / regenerate report"):
+        if st.button("📝 Generate deep-dive report", type="primary"):
+            wi = detail.get("wacc", {}) or {}
+            wv = wi.get("wacc") or 0.085
             di = detail.get("dcf_inputs", {})
-            wv = (detail.get("wacc", {}) or {}).get("wacc") or 0.085
             impl_ctx = fundamental.implied_growth(md.price, di.get("base_fcf"), wv, 0.03, 10,
                                                   di.get("net_debt") or 0, di.get("shares"), True)
-            ctx = (
-                f"Company {company} ({ticker}); sector {md.sector}. Price {money(md.price,2)}; "
-                f"market cap {big(md.market_cap)}. Bottom-up WACC {pct(wv)}. "
-                f"Revenue {big(f.metrics.get('Revenue TTM'))}; revenue CAGR "
-                f"{pct(f.metrics.get('Revenue CAGR 3y'))}; EPS CAGR {pct(f.metrics.get('EPS CAGR 3y'))}. "
-                f"Gross/op/net margin {pct(f.metrics.get('Gross Margin'))}/"
+            model_ctx = (
+                f"Price {money(md.price,2)}; market cap {big(md.market_cap)}; sector {md.sector}. "
+                f"Bottom-up WACC {pct(wv)} (CAPM cost of equity {pct(wi.get('ke'))}, after-tax cost "
+                f"of debt {pct(wi.get('kd_after_tax'))}, beta {wi.get('beta')}). "
+                f"Revenue {big(f.metrics.get('Revenue TTM'))}; revenue 3y CAGR "
+                f"{pct(f.metrics.get('Revenue CAGR 3y'))}; EPS 3y CAGR {pct(f.metrics.get('EPS CAGR 3y'))}. "
+                f"Margins gross/op/net {pct(f.metrics.get('Gross Margin'))}/"
                 f"{pct(f.metrics.get('Operating Margin'))}/{pct(f.metrics.get('Net Margin'))}; "
                 f"FCF margin {pct(f.metrics.get('FCF Margin'))}; ROIC {pct(f.metrics.get('ROIC'))}; "
                 f"net debt/EBITDA {mult(f.metrics.get('Net Debt to EBITDA'))}. "
-                f"P/E {mult(f.metrics.get('PE'))} ({pct(f.metrics.get('PE 5y Pctile'),0)} of own 5y), "
-                f"EV/EBITDA {mult(f.metrics.get('EV EBITDA'))}, EV/Sales {mult(f.metrics.get('EV Sales'))}. "
-                f"Backlog {big(detail.get('backlog',{}).get('latest'))}. "
-                f"Reverse-DCF: the price implies ~"
-                f"{pct(impl_ctx,1) if impl_ctx is not None else 'extreme/off-model'} stage-1 FCF growth. "
-                f"Technical read: {t.verdict}. Markov regime: {mk.verdict}."
+                f"Multiples: P/E {mult(f.metrics.get('PE'))} ({pct(f.metrics.get('PE 5y Pctile'),0)} of "
+                f"its own 5y range), EV/EBITDA {mult(f.metrics.get('EV EBITDA'))}, EV/Sales "
+                f"{mult(f.metrics.get('EV Sales'))}. Backlog/RPO {big(detail.get('backlog',{}).get('latest'))}. "
+                f"DCF fair value bear/base/bull {money(f.metrics.get('Bear FV'),2)} / "
+                f"{money(f.metrics.get('Base FV'),2)} / {money(f.metrics.get('Bull FV'),2)} "
+                f"(vs price {money(md.price,2)}). Reverse-DCF: today's price implies a starting ~"
+                f"{pct(impl_ctx,1) if impl_ctx is not None else 'extreme/off-model'} FCF growth "
+                f"fading to terminal over 10 years. Lens verdicts — fundamental: {f.verdict}; "
+                f"technical: {t.verdict} ({t.summary}); Markov regime: {mk.verdict} ({mk.summary})."
             )
-            prompt = (
-                f"Write a thorough equity research report on {company} ({ticker}) for a sophisticated "
-                f"investor. Use web search for current business facts, recent news, competitive "
-                f"position, and macro/policy/geopolitical context; cite sources with dates and URLs. "
-                f"Ground all figures in this computed model data and do not contradict it:\n\n{ctx}\n\n"
-                f"Use these markdown sections:\n"
-                f"## Business & moat\n"
-                f"## Valuation & fair value — reason explicitly from the DCF, the bottom-up WACC "
-                f"({pct(wv)}), the multiples-vs-own-history, and the reverse-DCF; conclude with a "
-                f"defensible fair-value RANGE and exactly what must be true to justify it\n"
-                f"## Bull case\n## Bear case\n## Key risks\n## Macro, policy & catalysts\n"
-                f"## Bottom line — a reasoned synthesis, NOT buy/sell advice\n\n"
-                f"Be specific and concrete; avoid generic filler. End with exactly: "
-                f"'Decision-support only — not financial advice.'"
-            )
-            with st.spinner("Researching and writing… (~30–60s)"):
-                st.session_state[key] = llm.web_research(prompt, max_tokens=7000) or "Report unavailable."
+            meta = {"company": company, "ticker": ticker, "sector": md.sector,
+                    "asof": datetime.now(timezone.utc).date().isoformat()}
+            with st.status("Starting research pipeline…", expanded=True) as status:
+                report = llm.deep_dive_report(meta, model_ctx,
+                                              progress=lambda m: status.update(label=m))
+                ok = bool(report) and not report.lstrip().startswith("__ERROR__")
+                status.update(label="Deep dive complete ✔" if ok else "Pipeline error — see below",
+                              state="complete" if ok else "error", expanded=False)
+            st.session_state[key] = report or ("Report unavailable — check that your Anthropic key "
+                                               "is set and the account has credit, then retry.")
         if st.session_state.get(key):
+            st.download_button("⬇️ Download report (.md)", st.session_state[key],
+                               file_name=f"{ticker}_deep_dive.md", mime="text/markdown")
             st.markdown(st.session_state[key])
 
 # ── TAB 3: Macro & News ──────────────────────────────────────────────────────
