@@ -34,21 +34,27 @@ def _build_prompt(md: MarketData, rates: dict) -> str:
     return f"""Research the current macro and government/policy backdrop for {company} ({md.ticker}), \
 a {sector} company. {rate_line}
 
-Focus on items active in the last ~6 months relevant to: {theme}.
-Cover: (1) the current Fed/rates posture and its direction; (2) legislation, \
-regulation, tariffs, export controls, subsidies, or permitting changes that \
-affect this company's sector.
+Prioritize items from the last ~3 months; include the most recent dated news you can find.
+Cover ALL of:
+  (1) the current Fed/rates posture and its direction;
+  (2) legislation, regulation, tariffs, export controls, subsidies, or permitting changes;
+  (3) active wars / armed conflicts / geopolitical flashpoints and supply-chain disruptions \
+that touch this company, its customers, its inputs, or its sector;
+  (4) the most recent company- or sector-specific news headlines.
 
-Use web search. For each distinct item, decide whether it is a TAILWIND, \
-HEADWIND, or NEUTRAL for {md.ticker} specifically, and explain why in one line.
+Use web search. For each distinct item, decide whether it is a TAILWIND, HEADWIND, or NEUTRAL \
+for {md.ticker} specifically, note whether it is a NEAR-term or LONG-term driver, and explain \
+in one line how it affects future revenue/earnings projections.
 
 Finish your answer with a single JSON code block of this exact shape:
 ```json
 {{
   "rates_posture": "one sentence on Fed/rates direction and what it means for this stock",
+  "geopolitics": "one or two sentences on wars/conflicts/geopolitics affecting this stock (or 'none material')",
+  "forward_view": "two sentences on how these policy/macro/geopolitical forces shape the company's FORWARD revenue/earnings outlook",
   "overall": "tailwind | headwind | mixed",
   "signals": [
-    {{"item": "short name", "impact": "tailwind|headwind|neutral", "date": "YYYY-MM or YYYY-MM-DD", "rationale": "one line", "source": "https://..."}}
+    {{"item": "short name", "impact": "tailwind|headwind|neutral", "horizon": "near|long", "date": "YYYY-MM or YYYY-MM-DD", "headline": "the actual recent development", "rationale": "effect on this stock's projections", "source": "https://..."}}
   ]
 }}
 ```"""
@@ -118,20 +124,25 @@ def run(md: MarketData) -> LensResult:
     source_lines = []
     for sg in signals:
         impact = str(sg.get("impact", "neutral")).upper()
+        horizon = str(sg.get("horizon", "")).lower()
+        tag = f"{impact}/{horizon}" if horizon else impact
+        headline = sg.get("headline") or sg.get("item", "?")
         signal_lines.append(
-            f"[{impact}] {sg.get('item', '?')} ({sg.get('date', 'n/a')}): {sg.get('rationale', '')}"
+            f"[{tag}] {headline} ({sg.get('date', 'n/a')}): {sg.get('rationale', '')}"
         )
         if sg.get("source"):
             source_lines.append(f"{sg.get('item', '?')}: {sg['source']}")
 
     posture = parsed.get("rates_posture", "") if isinstance(parsed, dict) else ""
-    summary = (
-        f"{verdict}. {posture or rates_text}. "
-        + (f"{len(signals)} policy signal(s): "
-           + "; ".join(s.split(': ', 1)[0].replace('[', '').replace(']', '')
-                       for s in signal_lines[:4])
-           if signals else "No specific policy signals surfaced.")
-    )
+    geo = parsed.get("geopolitics", "") if isinstance(parsed, dict) else ""
+    forward = parsed.get("forward_view", "") if isinstance(parsed, dict) else ""
+    summary = f"{verdict}. {posture or rates_text}."
+    if geo and geo.lower() not in ("none material", "none", "n/a"):
+        summary += f" Geopolitics: {geo}"
+    if forward:
+        summary += f" Forward view: {forward}"
+    if not signals:
+        summary += " No specific policy signals surfaced."
 
     metrics.update({
         "Rates Posture": posture or rates_text,

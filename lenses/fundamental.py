@@ -82,6 +82,63 @@ def dcf_per_share(base_fcf, growth, discount, terminal_growth, years, net_debt, 
     return (pv - (net_debt or 0)) / shares
 
 
+def dcf_breakdown(base_fcf, growth, discount, terminal_growth, years, net_debt, shares):
+    """Transparent year-by-year DCF: projected FCF, its present value, the
+    terminal value, and the EV → equity → per-share bridge. For the "why this
+    valuation" view. Returns None if degenerate."""
+    if (not base_fcf or base_fcf <= 0 or not shares or shares <= 0
+            or discount <= terminal_growth):
+        return None
+    rows = []
+    fcf = base_fcf
+    pv_explicit = 0.0
+    for yr in range(1, int(years) + 1):
+        fcf *= (1 + growth)
+        pv = fcf / (1 + discount) ** yr
+        pv_explicit += pv
+        rows.append({"Year": yr, "Projected FCF": fcf, "Present value": pv})
+    terminal = fcf * (1 + terminal_growth) / (discount - terminal_growth)
+    pv_terminal = terminal / (1 + discount) ** int(years)
+    ev = pv_explicit + pv_terminal
+    equity = ev - (net_debt or 0)
+    return {
+        "rows": rows,
+        "pv_explicit": pv_explicit,
+        "terminal_value": terminal,
+        "pv_terminal": pv_terminal,
+        "enterprise_value": ev,
+        "net_debt": net_debt or 0,
+        "equity_value": equity,
+        "per_share": equity / shares,
+        "terminal_pct_of_value": pv_terminal / ev if ev else None,
+    }
+
+
+def implied_growth(price, base_fcf, discount, terminal_growth, years, net_debt, shares):
+    """REVERSE DCF — the growth rate the CURRENT price implies, holding the other
+    assumptions fixed. Answers "what is the market pricing in?". Bisection on the
+    monotonic relationship between growth and value. None if the price sits
+    outside the solvable range (g in [-50%, +100%])."""
+    if (not price or price <= 0 or not base_fcf or base_fcf <= 0 or not shares
+            or shares <= 0 or discount <= terminal_growth):
+        return None
+    lo, hi = -0.50, 1.00
+
+    def fv(g):
+        return dcf_per_share(base_fcf, g, discount, terminal_growth, years, net_debt, shares)
+
+    flo, fhi = fv(lo), fv(hi)
+    if flo is None or fhi is None or not (flo <= price <= fhi):
+        return None
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if fv(mid) < price:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def _dcf_fair_value(base_fcf, growth, net_debt, shares):
     """Lens default DCF: clamps growth to a sane band, uses config assumptions."""
     g = max(min(growth if growth is not None else 0.05, 0.20), -0.05)
@@ -322,6 +379,7 @@ def model_detail(md: MarketData) -> dict:
             "ROIC": _safe_div(nopat, invcap),
             "EPS": eps,
             "Net Debt": debt - cash,
+            "Backlog (RPO)": s["backlog"].get(y),
         })
 
     # Own multiple history (year, value) for the valuation-vs-history charts.
@@ -347,10 +405,22 @@ def model_detail(md: MarketData) -> dict:
 
     res = run(md)
     latest = res.raw.get("latest", {})
+
+    # Backlog (remaining performance obligations) — a forward demand signal where
+    # the company reports it. Coverage = backlog / latest revenue.
+    backlog_latest = _latest(s["backlog"], years)
+    rev_latest = latest.get("revenue")
+    backlog = {
+        "latest": backlog_latest,
+        "series": [(y, s["backlog"].get(y)) for y in years if s["backlog"].get(y) is not None],
+        "coverage": _safe_div(backlog_latest, rev_latest),
+    }
+
     return {
         "entity": data.get("entity"),
         "annual": annual,
         "history": history,
+        "backlog": backlog,
         "lens": res,
         "dcf_inputs": {
             "base_fcf": latest.get("fcf"),

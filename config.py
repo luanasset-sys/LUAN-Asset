@@ -62,8 +62,8 @@ MARKOV_VOL_WINDOW = 4   # weeks, for the rolling realized-vol hi/lo tag
 
 # ── Fundamental model assumptions ────────────────────────────────────────────
 DCF_YEARS = 5
-DCF_DISCOUNT_RATE = 0.10        # base WACC proxy
-DCF_TERMINAL_GROWTH = 0.025
+DCF_DISCOUNT_RATE = 0.085       # WACC proxy — market-realistic for quality large caps
+DCF_TERMINAL_GROWTH = 0.030     # ~ long-run nominal GDP
 # Bull / base / bear growth haircuts applied to the trailing FCF growth estimate.
 DCF_SCENARIOS = {"bull": 1.30, "base": 1.00, "bear": 0.60}
 

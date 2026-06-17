@@ -68,14 +68,24 @@ streamlit run app.py
 
 Your browser opens a dashboard where you can:
 - enter any ticker and see the four-lens scorecard + agreement banner;
-- **drive the DCF with sliders** — growth, discount rate (WACC), terminal growth,
-  horizon — and watch fair value recompute live, with a growth × discount
-  sensitivity grid;
-- browse the full per-year financials & quality ratios from EDGAR;
-- see price/MA charts, a drawdown chart, and today's valuation vs the stock's own
-  5-year multiple range;
-- compare several tickers side by side;
+- **drive the DCF with sliders** (growth, WACC, terminal growth, horizon) and watch
+  fair value recompute live, with a growth × discount sensitivity grid;
+- read **what the market is pricing in** — a *reverse DCF* that solves for the FCF
+  growth today's price implies (far more useful than a single "target");
+- see **why the valuation is what it is** — a transparent year-by-year breakdown of
+  projected cash flows, the EV→equity→per-share bridge, how much value is terminal,
+  and **backlog / remaining performance obligations** where reported;
+- get an optional **AI-written plain-English explanation** of the valuation (needs key);
+- open the **Macro & News tab** — live Fed/rates, policy, tariffs/export-controls,
+  active wars/geopolitics, and dated headlines tied to the stock's forward outlook
+  (needs the Anthropic key);
+- browse full per-year financials & quality ratios, price/MA & drawdown charts,
+  today's valuation vs the stock's own 5-year range, and a side-by-side comparison;
 - optionally save the run to Airtable with one button.
+
+> The valuation defaults are intentionally market-realistic (8.5% discount, 3% terminal).
+> A simple DCF on free annual data is best read for the *reverse* signal (what's priced
+> in) and *relative* sensitivity — not as a literal price target.
 
 The dashboard uses the same lenses and free data sources as the CLI.
 

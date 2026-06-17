@@ -20,6 +20,7 @@ import streamlit as st
 
 import config
 import scorecard as sc
+from data import fred, llm
 from data.prices import fetch_market_data
 from lenses import fundamental, macro, markov, technical
 
@@ -68,10 +69,15 @@ def load_core(ticker: str):
     return md, f, t, mk, detail
 
 
-@st.cache_data(show_spinner="Running macro web search…", ttl=3600)
+@st.cache_data(show_spinner="Running macro web search…", ttl=900)
 def load_macro(ticker: str):
     md = fetch_market_data(ticker)
     return macro.run(md)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def rates_snap():
+    return fred.rates_snapshot()
 
 
 # ── sidebar ──────────────────────────────────────────────────────────────────
@@ -116,7 +122,8 @@ for col, res, name in zip(vc, [f, t, mk, (mc or _na_macro())], ["Fundamental", "
     col.markdown(f"**{name}**  \n{STANCE_EMOJI.get(res.stance,'⚪')} {res.verdict}")
 
 
-tabs = st.tabs(["📋 Scorecard", "💰 Interactive DCF", "📑 Financials", "📈 Charts", "⚖️ Compare"])
+tabs = st.tabs(["📋 Scorecard", "💰 Valuation & DCF", "🌐 Macro & News",
+                "📑 Financials", "📈 Charts", "⚖️ Compare"])
 
 # ── TAB 1: Scorecard ─────────────────────────────────────────────────────────
 with tabs[0]:
@@ -141,9 +148,8 @@ with tabs[0]:
         except Exception as exc:  # noqa: BLE001
             st.error(f"Airtable save failed: {exc}")
 
-# ── TAB 2: Interactive DCF ───────────────────────────────────────────────────
+# ── TAB 1: Valuation & DCF ───────────────────────────────────────────────────
 with tabs[1]:
-    st.subheader("Discounted cash-flow — drive the assumptions")
     di = detail.get("dcf_inputs", {})
     base_fcf0 = di.get("base_fcf")
     net_debt = di.get("net_debt") or 0
@@ -154,6 +160,7 @@ with tabs[1]:
         st.info("Not enough EDGAR data to build a DCF for this name "
                 "(missing free cash flow or share count).")
     else:
+        st.subheader("Drive the assumptions")
         c = st.columns(5)
         base_fcf = c[0].number_input("Base annual FCF ($)", value=float(base_fcf0),
                                      step=float(abs(base_fcf0)) / 20 or 1.0, format="%.0f")
@@ -166,15 +173,78 @@ with tabs[1]:
         years = c[4].slider("Projection years", 3, 10, config.DCF_YEARS)
 
         fv_live = fundamental.dcf_per_share(base_fcf, growth, discount, term, years, net_debt, shares)
+        impl = fundamental.implied_growth(md.price, base_fcf, discount, term, years, net_debt, shares)
+
         m = st.columns(3)
         if fv_live and md.price:
-            m[0].metric("Fair value / share", money(fv_live, 2), f"{(fv_live/md.price-1)*100:+.0f}% vs price")
+            m[0].metric("Your DCF fair value", money(fv_live, 2),
+                        f"{(fv_live/md.price-1)*100:+.0f}% vs price")
         else:
-            m[0].metric("Fair value / share", money(fv_live, 2))
+            m[0].metric("Your DCF fair value", money(fv_live, 2))
         m[1].metric("Current price", money(md.price, 2))
-        m[2].metric("Implied EV", big((fv_live * shares + net_debt) if fv_live else None))
+        m[2].metric("Market-implied growth", pct(impl, 1) if impl is not None else "off the charts",
+                    help="Reverse DCF: the FCF growth today's price implies, holding your other "
+                         "assumptions fixed.")
 
-        st.caption("Sensitivity — fair value/share across growth (rows) × discount rate (cols)")
+        # The headline insight — what the market is pricing in
+        if impl is not None:
+            gap = ""
+            if g0 is not None:
+                gap = (f" — vs the company's ~{pct(g0,1)} recent trailing growth. "
+                       + ("The market is betting it **accelerates**." if impl > g0 + 0.005
+                          else "The market expects it to **slow**." if impl < g0 - 0.005
+                          else "Roughly **in line** with its history."))
+            st.info(f"💡 **What the market is pricing in:** at **{money(md.price,2)}**, today's price "
+                    f"implies about **{pct(impl,1)} free-cash-flow growth per year for {years} years** "
+                    f"(then {pct(term,1)} forever), discounted at {pct(discount,1)}.{gap}")
+        else:
+            st.warning("⚠️ Today's price can't be reached by this DCF even at extreme growth — its value "
+                       "rests on things this simple model doesn't capture (buybacks, a much longer growth "
+                       "runway, optionality). Lean on the multiples and the *direction* of these numbers, "
+                       "not the absolute target.")
+
+        # Where the value comes from — transparent breakdown
+        bd = fundamental.dcf_breakdown(base_fcf, growth, discount, term, years, net_debt, shares)
+        if bd:
+            st.subheader("Where the value comes from")
+            bc = st.columns(2)
+            proj = pd.DataFrame(bd["rows"]).set_index("Year")
+            bc[0].caption("Projected free cash flow, and its worth in today's dollars")
+            bc[0].dataframe(pd.DataFrame({
+                "Projected FCF": proj["Projected FCF"].map(big),
+                "Present value": proj["Present value"].map(big),
+            }), width="stretch")
+            bridge = pd.DataFrame({
+                "Step": ["PV of explicit FCF", "+ PV of terminal value", "= Enterprise value",
+                         "− Net debt", "= Equity value", "÷ shares → per share"],
+                "Value": [big(bd["pv_explicit"]), big(bd["pv_terminal"]), big(bd["enterprise_value"]),
+                          big(bd["net_debt"]), big(bd["equity_value"]), money(bd["per_share"], 2)],
+            }).set_index("Step")
+            bc[1].caption("The bridge from cash flows to a per-share value")
+            bc[1].dataframe(bridge, width="stretch")
+            if bd["terminal_pct_of_value"] is not None:
+                st.caption(f"⚠️ {pct(bd['terminal_pct_of_value'],0)} of the value sits in the terminal "
+                           f"value — everything beyond year {years}. The more value is out there, the "
+                           f"more the answer depends on guesses about the distant future.")
+
+        # Backlog / remaining performance obligations
+        bl = detail.get("backlog", {})
+        if bl.get("latest"):
+            st.subheader("Backlog (contracted future revenue)")
+            blc = st.columns(2)
+            blc[0].metric("Reported backlog (RPO)", big(bl["latest"]),
+                          (pct(bl["coverage"], 0) + " of annual revenue") if bl.get("coverage") else None)
+            pts = bl.get("series", [])
+            if len(pts) >= 2:
+                blc[1].caption("Backlog by year")
+                blc[1].bar_chart(pd.Series({str(y): v for y, v in pts}))
+            st.caption("Backlog = signed business not yet booked as revenue — a forward demand signal. "
+                       "Rising backlog and high coverage support a higher growth assumption above. "
+                       "(Only shown for companies that report remaining performance obligations.)")
+
+        # Sensitivity
+        st.subheader("Sensitivity")
+        st.caption("Fair value / share across growth (rows) × discount rate (cols)")
         g_axis = [growth + d for d in (-0.04, -0.02, 0, 0.02, 0.04)]
         d_axis = [max(term + 0.01, discount + d) for d in (-0.02, -0.01, 0, 0.01, 0.02)]
         grid = pd.DataFrame(
@@ -184,11 +254,82 @@ with tabs[1]:
             columns=[f"{d*100:.2f}%" for d in d_axis],
         )
         st.dataframe(grid.style.format(lambda v: money(v, 0)), width="stretch")
-        st.caption("⚠️ A deliberately simple DCF on free annual data — explore the *relative* "
-                   "sensitivity, don't read the absolute dollar value as a price target.")
+
+        # AI explanation of the valuation (optional — needs Anthropic key)
+        st.subheader("Why is it valued like this?")
+        if llm.available():
+            if st.button("🧠 Explain this valuation in plain English"):
+                with st.spinner("Thinking…"):
+                    txt = llm.synthesize(
+                        f"In 4-6 plain-English sentences, explain why {company} ({ticker}) trades where it "
+                        f"does and what investors are betting on. Use ONLY these facts; invent nothing. "
+                        f"Price {money(md.price,2)}; simple-DCF value {money(fv_live,2)}; market-implied FCF "
+                        f"growth {pct(impl,1) if impl is not None else 'extreme/off-model'} vs ~{pct(g0,1)} "
+                        f"trailing; P/E {mult(f.metrics.get('PE'))} "
+                        f"({pct(f.metrics.get('PE 5y Pctile'),0)} of its own 5-yr range); "
+                        f"EV/EBITDA {mult(f.metrics.get('EV EBITDA'))}; ROIC {pct(f.metrics.get('ROIC'))}; "
+                        f"FCF margin {pct(f.metrics.get('FCF Margin'))}; "
+                        f"backlog {big(bl.get('latest')) if bl.get('latest') else 'n/a'}. "
+                        f"Explain what would have to be true to justify the price. Do not give buy/sell advice.",
+                        max_tokens=400)
+                    st.write(txt or "Explanation unavailable right now.")
+        else:
+            st.caption("Add your Anthropic key (`ANTHROPIC_API_KEY` in `.env`) to get an AI-written "
+                       "explanation of the valuation here.")
+
+        st.caption("⚠️ A deliberately simple DCF on free annual data — best used for the *reverse* read "
+                   "(what's priced in) and *relative* sensitivity, not as a literal price target.")
+
+# ── TAB 2: Macro & News ──────────────────────────────────────────────────────
+with tabs[2]:
+    st.subheader(f"Macro, policy, geopolitics & live news — {ticker}")
+    r = rates_snap()
+    rc = st.columns(4)
+    rc[0].metric("Fed funds", f"{r['fed_funds']:.2f}%" if r.get("fed_funds") is not None else "—")
+    rc[1].metric("US 10Y", f"{r['ust_10y']:.2f}%" if r.get("ust_10y") is not None else "—")
+    rc[2].metric("US 2Y", f"{r['ust_2y']:.2f}%" if r.get("ust_2y") is not None else "—")
+    rc[3].metric("CPI YoY", f"{r['cpi_yoy']:.1f}%" if r.get("cpi_yoy") is not None else "—")
+    st.divider()
+
+    if not llm.available():
+        st.info("Live policy / geopolitics / news uses web search via the Anthropic API. Add "
+                "`ANTHROPIC_API_KEY` to your `.env` to switch it on. (FRED rates above always work.)")
+    else:
+        if st.button("🌐 Fetch / refresh live news & policy"):
+            load_macro.clear()
+            st.session_state["macro_on"] = True
+        if mc is not None or st.session_state.get("macro_on"):
+            res = load_macro(ticker)
+            parsed = res.raw.get("parsed", {}) if res and res.raw else {}
+            badge = {"Net Tailwind": "🟢", "Net Headwind": "🔴"}.get(res.verdict, "⚪")
+            st.markdown(f"### {badge} Overall: {res.verdict}")
+            if parsed.get("rates_posture"):
+                st.markdown(f"**Rates posture:** {parsed['rates_posture']}")
+            if parsed.get("geopolitics"):
+                st.markdown(f"**Geopolitics / conflict:** {parsed['geopolitics']}")
+            if parsed.get("forward_view"):
+                st.markdown(f"**Forward outlook:** {parsed['forward_view']}")
+            sigs = parsed.get("signals", [])
+            if sigs:
+                st.markdown("#### Signals & headlines")
+                for sg in sigs:
+                    imp = str(sg.get("impact", "neutral")).lower()
+                    b = {"tailwind": "🟢 Tailwind", "headwind": "🔴 Headwind"}.get(imp, "⚪ Neutral")
+                    hz = sg.get("horizon", "")
+                    hz = f" · {hz}-term" if hz else ""
+                    head = sg.get("headline") or sg.get("item", "")
+                    line = (f"**{b}{hz}** — {head}  \n_{sg.get('date','')}_ — {sg.get('rationale','')}")
+                    if sg.get("source"):
+                        line += f"  \n🔗 {sg['source']}"
+                    st.markdown(line)
+            st.caption("Pulled live from the web at fetch time. Click the button to refresh for the "
+                       "latest. (~20–40s per fetch; uses your Anthropic key.)")
+        else:
+            st.caption(f"Click **Fetch / refresh** to pull live policy, geopolitics, and headlines for "
+                       f"{ticker} and how they bear on its forward outlook.")
 
 # ── TAB 3: Financials ────────────────────────────────────────────────────────
-with tabs[2]:
+with tabs[3]:
     st.subheader("Annual financials & quality ratios (SEC EDGAR)")
     annual = detail.get("annual", [])
     if not annual:
@@ -217,7 +358,7 @@ with tabs[2]:
             col.metric(label, mult(f.metrics.get(key)), pct(f.metrics.get(pkey), 0) + " of 5y")
 
 # ── TAB 4: Charts ────────────────────────────────────────────────────────────
-with tabs[3]:
+with tabs[4]:
     if md.has_history:
         close = md.close
         st.subheader("Price & moving averages (≈6y)")
@@ -250,7 +391,7 @@ with tabs[3]:
         st.info("No price history available for charts.")
 
 # ── TAB 5: Compare ───────────────────────────────────────────────────────────
-with tabs[4]:
+with tabs[5]:
     st.subheader("Side-by-side comparison")
     peers = st.text_input("Tickers (comma-separated)", value=f"{ticker}, MSFT, NVDA")
     names = [x.strip().upper() for x in peers.replace(",", " ").split() if x.strip()]

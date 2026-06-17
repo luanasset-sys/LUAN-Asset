@@ -49,10 +49,12 @@ CONCEPT_TAGS: dict[str, list[str]] = {
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
     ],
     "equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    # Order backlog proxy — total remaining performance obligations (where reported).
+    "backlog": ["RevenueRemainingPerformanceObligation"],
 }
 
 # Balance-sheet concepts are point-in-time (instant); income/cash-flow are flows.
-_INSTANT_CONCEPTS = {"total_debt", "current_debt", "cash", "equity"}
+_INSTANT_CONCEPTS = {"total_debt", "current_debt", "cash", "equity", "backlog"}
 
 
 def _headers() -> dict[str, str]:
