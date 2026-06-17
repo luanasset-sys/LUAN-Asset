@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 import config
-from data import edgar
+from data import edgar, fred
 from data.prices import MarketData
 from models import (BEARISH, BULLISH, NA, NEUTRAL, LensResult)
 
@@ -62,12 +62,21 @@ def _safe_div(a, b):
     return a / b
 
 
-def dcf_per_share(base_fcf, growth, discount, terminal_growth, years, net_debt, shares):
+def _stage_growth(g, terminal_growth, yr, years, fade):
+    """Year-`yr` growth. With fade, stage-1 growth declines linearly to the
+    terminal growth by the final year (a simple two-stage model)."""
+    if not fade or years <= 1:
+        return g
+    return g + (terminal_growth - g) * (yr - 1) / (years - 1)
+
+
+def dcf_per_share(base_fcf, growth, discount, terminal_growth, years, net_debt, shares,
+                  fade=False):
     """Parameterized DCF — the interactive engine the dashboard drives.
 
-    Projects `base_fcf` at `growth` for `years`, discounts at `discount`, adds a
-    Gordon terminal value, subtracts net debt, divides by shares. No clamping —
-    the caller (or a UI slider) owns the assumptions. Returns None if degenerate.
+    Projects `base_fcf` (optionally fading `growth` toward terminal growth over
+    the horizon), discounts at `discount`, adds a Gordon terminal value,
+    subtracts net debt, divides by shares. Returns None if degenerate.
     """
     if (not base_fcf or base_fcf <= 0 or not shares or shares <= 0
             or discount <= terminal_growth):
@@ -75,17 +84,18 @@ def dcf_per_share(base_fcf, growth, discount, terminal_growth, years, net_debt, 
     pv = 0.0
     fcf = base_fcf
     for yr in range(1, int(years) + 1):
-        fcf *= (1 + growth)
+        fcf *= (1 + _stage_growth(growth, terminal_growth, yr, int(years), fade))
         pv += fcf / (1 + discount) ** yr
     terminal = fcf * (1 + terminal_growth) / (discount - terminal_growth)
     pv += terminal / (1 + discount) ** int(years)
     return (pv - (net_debt or 0)) / shares
 
 
-def dcf_breakdown(base_fcf, growth, discount, terminal_growth, years, net_debt, shares):
+def dcf_breakdown(base_fcf, growth, discount, terminal_growth, years, net_debt, shares,
+                  fade=False):
     """Transparent year-by-year DCF: projected FCF, its present value, the
-    terminal value, and the EV → equity → per-share bridge. For the "why this
-    valuation" view. Returns None if degenerate."""
+    terminal value, and the EV → equity → per-share bridge. Returns None if
+    degenerate."""
     if (not base_fcf or base_fcf <= 0 or not shares or shares <= 0
             or discount <= terminal_growth):
         return None
@@ -93,10 +103,11 @@ def dcf_breakdown(base_fcf, growth, discount, terminal_growth, years, net_debt, 
     fcf = base_fcf
     pv_explicit = 0.0
     for yr in range(1, int(years) + 1):
-        fcf *= (1 + growth)
+        g = _stage_growth(growth, terminal_growth, yr, int(years), fade)
+        fcf *= (1 + g)
         pv = fcf / (1 + discount) ** yr
         pv_explicit += pv
-        rows.append({"Year": yr, "Projected FCF": fcf, "Present value": pv})
+        rows.append({"Year": yr, "Growth": g, "Projected FCF": fcf, "Present value": pv})
     terminal = fcf * (1 + terminal_growth) / (discount - terminal_growth)
     pv_terminal = terminal / (1 + discount) ** int(years)
     ev = pv_explicit + pv_terminal
@@ -114,18 +125,17 @@ def dcf_breakdown(base_fcf, growth, discount, terminal_growth, years, net_debt, 
     }
 
 
-def implied_growth(price, base_fcf, discount, terminal_growth, years, net_debt, shares):
-    """REVERSE DCF — the growth rate the CURRENT price implies, holding the other
-    assumptions fixed. Answers "what is the market pricing in?". Bisection on the
-    monotonic relationship between growth and value. None if the price sits
-    outside the solvable range (g in [-50%, +100%])."""
+def implied_growth(price, base_fcf, discount, terminal_growth, years, net_debt, shares,
+                   fade=False):
+    """REVERSE DCF — the stage-1 growth the CURRENT price implies, holding the
+    other assumptions fixed. None if price is outside the solvable range."""
     if (not price or price <= 0 or not base_fcf or base_fcf <= 0 or not shares
             or shares <= 0 or discount <= terminal_growth):
         return None
     lo, hi = -0.50, 1.00
 
     def fv(g):
-        return dcf_per_share(base_fcf, g, discount, terminal_growth, years, net_debt, shares)
+        return dcf_per_share(base_fcf, g, discount, terminal_growth, years, net_debt, shares, fade)
 
     flo, fhi = fv(lo), fv(hi)
     if flo is None or fhi is None or not (flo <= price <= fhi):
@@ -137,6 +147,34 @@ def implied_growth(price, base_fcf, discount, terminal_growth, years, net_debt, 
         else:
             hi = mid
     return (lo + hi) / 2
+
+
+def compute_wacc(rf, beta, mcap, total_debt, interest_expense, tax=_TAX, erp=0.05):
+    """Bottom-up weighted average cost of capital.
+
+    Cost of equity via CAPM (rf + beta·ERP); cost of debt from interest /
+    debt (after tax); weighted by market cap vs debt. Bounded to a sane band.
+    Returns the WACC plus the full breakdown so the UI can show its work.
+    """
+    beta = beta if (beta and beta > 0) else 1.0
+    rf = rf if (rf and rf > 0) else 0.043
+    ke = rf + beta * erp
+    if total_debt and total_debt > 0 and interest_expense:
+        kd = min(max(abs(interest_expense) / total_debt, 0.01), 0.15)
+    else:
+        kd = rf + 0.015
+    kd_at = kd * (1 - tax)
+    e = mcap or 0.0
+    d = total_debt or 0.0
+    v = e + d
+    if v <= 0:
+        we, wd, wacc = 1.0, 0.0, ke
+    else:
+        we, wd = e / v, d / v
+        wacc = we * ke + wd * kd_at
+    wacc = min(max(wacc, 0.06), 0.14)
+    return {"wacc": wacc, "ke": ke, "kd": kd, "kd_after_tax": kd_at, "beta": beta,
+            "rf": rf, "erp": erp, "weight_equity": we, "weight_debt": wd, "tax": tax}
 
 
 def _dcf_fair_value(base_fcf, growth, net_debt, shares):
@@ -406,6 +444,12 @@ def model_detail(md: MarketData) -> dict:
     res = run(md)
     latest = res.raw.get("latest", {})
 
+    # Bottom-up WACC for this specific company (live rf, the stock's beta).
+    total_debt_latest = (_latest(s["total_debt"], years) or 0) + (_latest(s["current_debt"], years) or 0)
+    interest = _latest(s["interest_expense"], years)
+    rf = (fred.rates_snapshot().get("ust_10y") or 4.3) / 100.0
+    wacc = compute_wacc(rf, md.info.get("beta"), md.market_cap, total_debt_latest, interest)
+
     # Backlog (remaining performance obligations) — a forward demand signal where
     # the company reports it. Coverage = backlog / latest revenue.
     backlog_latest = _latest(s["backlog"], years)
@@ -421,6 +465,7 @@ def model_detail(md: MarketData) -> dict:
         "annual": annual,
         "history": history,
         "backlog": backlog,
+        "wacc": wacc,
         "lens": res,
         "dcf_inputs": {
             "base_fcf": latest.get("fcf"),

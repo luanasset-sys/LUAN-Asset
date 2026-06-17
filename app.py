@@ -122,7 +122,7 @@ for col, res, name in zip(vc, [f, t, mk, (mc or _na_macro())], ["Fundamental", "
     col.markdown(f"**{name}**  \n{STANCE_EMOJI.get(res.stance,'⚪')} {res.verdict}")
 
 
-tabs = st.tabs(["📋 Scorecard", "💰 Valuation & DCF", "🌐 Macro & News",
+tabs = st.tabs(["📋 Scorecard", "💰 Valuation & DCF", "📝 Research Report", "🌐 Macro & News",
                 "📑 Financials", "📈 Charts", "⚖️ Compare"])
 
 # ── TAB 1: Scorecard ─────────────────────────────────────────────────────────
@@ -161,19 +161,36 @@ with tabs[1]:
                 "(missing free cash flow or share count).")
     else:
         st.subheader("Drive the assumptions")
+        wacc_info = detail.get("wacc", {})
+        wacc_default = (wacc_info.get("wacc") or config.DCF_DISCOUNT_RATE) * 100
+        with st.expander(f"🏗️ How the discount rate (bottom-up WACC ≈ {wacc_default:.1f}%) is built"):
+            if wacc_info:
+                st.markdown(
+                    f"- **Cost of equity** (CAPM): risk-free {pct(wacc_info['rf'])} + beta "
+                    f"{wacc_info['beta']:.2f} × equity-risk-premium {pct(wacc_info['erp'])} "
+                    f"= **{pct(wacc_info['ke'])}**\n"
+                    f"- **Cost of debt** (after {pct(wacc_info['tax'])} tax): "
+                    f"**{pct(wacc_info['kd_after_tax'])}**\n"
+                    f"- **Weights**: equity {pct(wacc_info['weight_equity'])}, "
+                    f"debt {pct(wacc_info['weight_debt'])}\n"
+                    f"- **→ WACC ≈ {pct(wacc_info['wacc'])}** (bounded to 6–14%)")
+            st.caption("Bottom-up estimate from free data (live treasury yield + the stock's beta). "
+                       "Adjust the slider if you have a better number.")
+
         c = st.columns(5)
         base_fcf = c[0].number_input("Base annual FCF ($)", value=float(base_fcf0),
                                      step=float(abs(base_fcf0)) / 20 or 1.0, format="%.0f")
-        growth = c[1].slider("FCF growth %/yr", -10.0, 30.0,
-                             float(round((g0 or 0.05) * 100, 1)), 0.5) / 100
+        growth = c[1].slider("Stage-1 FCF growth %/yr", -10.0, 40.0,
+                             float(round((g0 or 0.06) * 100, 1)), 0.5) / 100
         discount = c[2].slider("Discount rate (WACC) %", 5.0, 15.0,
-                               config.DCF_DISCOUNT_RATE * 100, 0.25) / 100
+                               float(round(wacc_default, 2)), 0.25) / 100
         term = c[3].slider("Terminal growth %", 0.0, 5.0,
                            config.DCF_TERMINAL_GROWTH * 100, 0.25) / 100
-        years = c[4].slider("Projection years", 3, 10, config.DCF_YEARS)
+        years = c[4].slider("Projection years", 5, 15, 10)
 
-        fv_live = fundamental.dcf_per_share(base_fcf, growth, discount, term, years, net_debt, shares)
-        impl = fundamental.implied_growth(md.price, base_fcf, discount, term, years, net_debt, shares)
+        FADE = True  # stage-1 growth fades linearly to terminal over the horizon
+        fv_live = fundamental.dcf_per_share(base_fcf, growth, discount, term, years, net_debt, shares, FADE)
+        impl = fundamental.implied_growth(md.price, base_fcf, discount, term, years, net_debt, shares, FADE)
 
         m = st.columns(3)
         if fv_live and md.price:
@@ -195,8 +212,8 @@ with tabs[1]:
                           else "The market expects it to **slow**." if impl < g0 - 0.005
                           else "Roughly **in line** with its history."))
             st.info(f"💡 **What the market is pricing in:** at **{money(md.price,2)}**, today's price "
-                    f"implies about **{pct(impl,1)} free-cash-flow growth per year for {years} years** "
-                    f"(then {pct(term,1)} forever), discounted at {pct(discount,1)}.{gap}")
+                    f"implies a starting **~{pct(impl,1)} FCF growth, fading to {pct(term,1)} over "
+                    f"{years} years**, discounted at your {pct(discount,1)} WACC.{gap}")
         else:
             st.warning("⚠️ Today's price can't be reached by this DCF even at extreme growth — its value "
                        "rests on things this simple model doesn't capture (buybacks, a much longer growth "
@@ -204,13 +221,14 @@ with tabs[1]:
                        "not the absolute target.")
 
         # Where the value comes from — transparent breakdown
-        bd = fundamental.dcf_breakdown(base_fcf, growth, discount, term, years, net_debt, shares)
+        bd = fundamental.dcf_breakdown(base_fcf, growth, discount, term, years, net_debt, shares, FADE)
         if bd:
             st.subheader("Where the value comes from")
             bc = st.columns(2)
             proj = pd.DataFrame(bd["rows"]).set_index("Year")
-            bc[0].caption("Projected free cash flow, and its worth in today's dollars")
+            bc[0].caption("Each year's growth, projected free cash flow, and its worth today")
             bc[0].dataframe(pd.DataFrame({
+                "Growth": proj["Growth"].map(lambda v: pct(v)),
                 "Projected FCF": proj["Projected FCF"].map(big),
                 "Present value": proj["Present value"].map(big),
             }), width="stretch")
@@ -249,8 +267,8 @@ with tabs[1]:
         d_axis = sorted({round(max(term + 0.0101, discount + d), 4)
                          for d in (-0.02, -0.01, 0, 0.01, 0.02)})
         grid = pd.DataFrame(
-            [[fundamental.dcf_per_share(base_fcf, gg, dd, term, years, net_debt, shares) for dd in d_axis]
-             for gg in g_axis],
+            [[fundamental.dcf_per_share(base_fcf, gg, dd, term, years, net_debt, shares, FADE)
+              for dd in d_axis] for gg in g_axis],
             index=[f"{g*100:.1f}%" for g in g_axis],
             columns=[f"{d*100:.2f}%" for d in d_axis],
         )
@@ -281,8 +299,60 @@ with tabs[1]:
         st.caption("⚠️ A deliberately simple DCF on free annual data — best used for the *reverse* read "
                    "(what's priced in) and *relative* sensitivity, not as a literal price target.")
 
-# ── TAB 2: Macro & News ──────────────────────────────────────────────────────
+# ── TAB 2: Research Report (Claude-written) ──────────────────────────────────
 with tabs[2]:
+    st.subheader(f"Equity research report — {company} ({ticker})")
+    if not llm.available():
+        st.info("The full written report runs on the Anthropic API. Add `ANTHROPIC_API_KEY` to your "
+                "`.env` (with a little account credit), save, and restart — then generate it here.")
+    else:
+        st.caption("Claude writes a full report from the computed model + live web search: business & "
+                   "moat, valuation & fair-value range, bull/bear & risks, macro/policy/catalysts. "
+                   "~30–60s; uses your Anthropic key.")
+        key = f"report::{ticker}"
+        if st.button("📝 Generate / regenerate report"):
+            di = detail.get("dcf_inputs", {})
+            wv = (detail.get("wacc", {}) or {}).get("wacc") or 0.085
+            impl_ctx = fundamental.implied_growth(md.price, di.get("base_fcf"), wv, 0.03, 10,
+                                                  di.get("net_debt") or 0, di.get("shares"), True)
+            ctx = (
+                f"Company {company} ({ticker}); sector {md.sector}. Price {money(md.price,2)}; "
+                f"market cap {big(md.market_cap)}. Bottom-up WACC {pct(wv)}. "
+                f"Revenue {big(f.metrics.get('Revenue TTM'))}; revenue CAGR "
+                f"{pct(f.metrics.get('Revenue CAGR 3y'))}; EPS CAGR {pct(f.metrics.get('EPS CAGR 3y'))}. "
+                f"Gross/op/net margin {pct(f.metrics.get('Gross Margin'))}/"
+                f"{pct(f.metrics.get('Operating Margin'))}/{pct(f.metrics.get('Net Margin'))}; "
+                f"FCF margin {pct(f.metrics.get('FCF Margin'))}; ROIC {pct(f.metrics.get('ROIC'))}; "
+                f"net debt/EBITDA {mult(f.metrics.get('Net Debt to EBITDA'))}. "
+                f"P/E {mult(f.metrics.get('PE'))} ({pct(f.metrics.get('PE 5y Pctile'),0)} of own 5y), "
+                f"EV/EBITDA {mult(f.metrics.get('EV EBITDA'))}, EV/Sales {mult(f.metrics.get('EV Sales'))}. "
+                f"Backlog {big(detail.get('backlog',{}).get('latest'))}. "
+                f"Reverse-DCF: the price implies ~"
+                f"{pct(impl_ctx,1) if impl_ctx is not None else 'extreme/off-model'} stage-1 FCF growth. "
+                f"Technical read: {t.verdict}. Markov regime: {mk.verdict}."
+            )
+            prompt = (
+                f"Write a thorough equity research report on {company} ({ticker}) for a sophisticated "
+                f"investor. Use web search for current business facts, recent news, competitive "
+                f"position, and macro/policy/geopolitical context; cite sources with dates and URLs. "
+                f"Ground all figures in this computed model data and do not contradict it:\n\n{ctx}\n\n"
+                f"Use these markdown sections:\n"
+                f"## Business & moat\n"
+                f"## Valuation & fair value — reason explicitly from the DCF, the bottom-up WACC "
+                f"({pct(wv)}), the multiples-vs-own-history, and the reverse-DCF; conclude with a "
+                f"defensible fair-value RANGE and exactly what must be true to justify it\n"
+                f"## Bull case\n## Bear case\n## Key risks\n## Macro, policy & catalysts\n"
+                f"## Bottom line — a reasoned synthesis, NOT buy/sell advice\n\n"
+                f"Be specific and concrete; avoid generic filler. End with exactly: "
+                f"'Decision-support only — not financial advice.'"
+            )
+            with st.spinner("Researching and writing… (~30–60s)"):
+                st.session_state[key] = llm.web_research(prompt, max_tokens=7000) or "Report unavailable."
+        if st.session_state.get(key):
+            st.markdown(st.session_state[key])
+
+# ── TAB 3: Macro & News ──────────────────────────────────────────────────────
+with tabs[3]:
     st.subheader(f"Macro, policy, geopolitics & live news — {ticker}")
     r = rates_snap()
     rc = st.columns(4)
@@ -319,9 +389,11 @@ with tabs[2]:
                     hz = sg.get("horizon", "")
                     hz = f" · {hz}-term" if hz else ""
                     head = sg.get("headline") or sg.get("item", "")
-                    line = (f"**{b}{hz}** — {head}  \n_{sg.get('date','')}_ — {sg.get('rationale','')}")
-                    if sg.get("source"):
-                        line += f"  \n🔗 {sg['source']}"
+                    src = sg.get("source")
+                    head_md = f"[{head}]({src})" if src else head
+                    line = f"**{b}{hz}** — {head_md}  \n_{sg.get('date','')}_ — {sg.get('rationale','')}"
+                    if src:
+                        line += f"  \n[🔗 Read article →]({src})"
                     st.markdown(line)
             st.caption("Pulled live from the web at fetch time. Click the button to refresh for the "
                        "latest. (~20–40s per fetch; uses your Anthropic key.)")
@@ -329,8 +401,8 @@ with tabs[2]:
             st.caption(f"Click **Fetch / refresh** to pull live policy, geopolitics, and headlines for "
                        f"{ticker} and how they bear on its forward outlook.")
 
-# ── TAB 3: Financials ────────────────────────────────────────────────────────
-with tabs[3]:
+# ── TAB 4: Financials ────────────────────────────────────────────────────────
+with tabs[4]:
     st.subheader("Annual financials & quality ratios (SEC EDGAR)")
     annual = detail.get("annual", [])
     if not annual:
@@ -358,8 +430,8 @@ with tabs[3]:
                 ["PE 5y Pctile", "EV EBITDA 5y Pctile", "EV Sales 5y Pctile"]):
             col.metric(label, mult(f.metrics.get(key)), pct(f.metrics.get(pkey), 0) + " of 5y")
 
-# ── TAB 4: Charts ────────────────────────────────────────────────────────────
-with tabs[4]:
+# ── TAB 5: Charts ────────────────────────────────────────────────────────────
+with tabs[5]:
     if md.has_history:
         close = md.close
         st.subheader("Price & moving averages (≈6y)")
@@ -391,8 +463,8 @@ with tabs[4]:
     else:
         st.info("No price history available for charts.")
 
-# ── TAB 5: Compare ───────────────────────────────────────────────────────────
-with tabs[5]:
+# ── TAB 6: Compare ───────────────────────────────────────────────────────────
+with tabs[6]:
     st.subheader("Side-by-side comparison")
     peers = st.text_input("Tickers (comma-separated)", value=f"{ticker}, MSFT, NVDA")
     names = [x.strip().upper() for x in peers.replace(",", " ").split() if x.strip()]

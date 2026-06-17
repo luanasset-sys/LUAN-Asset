@@ -28,6 +28,7 @@ CONCEPT_TAGS: dict[str, list[str]] = {
     "gross_profit": ["GrossProfit"],
     "operating_income": ["OperatingIncomeLoss"],
     "net_income": ["NetIncomeLoss"],
+    "interest_expense": ["InterestExpense", "InterestExpenseDebt", "InterestAndDebtExpense"],
     "eps_diluted": ["EarningsPerShareDiluted", "EarningsPerShareBasicAndDiluted"],
     "depreciation_amortization": [
         "DepreciationDepletionAndAmortization",

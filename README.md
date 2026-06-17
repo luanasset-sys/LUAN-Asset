@@ -68,8 +68,14 @@ streamlit run app.py
 
 Your browser opens a dashboard where you can:
 - enter any ticker and see the four-lens scorecard + agreement banner;
-- **drive the DCF with sliders** (growth, WACC, terminal growth, horizon) and watch
-  fair value recompute live, with a growth × discount sensitivity grid;
+- **get a full Claude-written equity research report** (business & moat, valuation &
+  fair-value range, bull/bear & risks, macro/policy/catalysts — grounded in the
+  computed model + live web search; needs the Anthropic key);
+- **drive a multi-stage DCF with sliders** (stage-1 growth that fades to terminal,
+  WACC, horizon) and watch fair value recompute live, with a sensitivity grid;
+- see the **bottom-up WACC** built per stock (CAPM cost of equity from the live
+  risk-free rate + the stock's beta, after-tax cost of debt, capital-structure
+  weights) instead of one flat number;
 - read **what the market is pricing in** — a *reverse DCF* that solves for the FCF
   growth today's price implies (far more useful than a single "target");
 - see **why the valuation is what it is** — a transparent year-by-year breakdown of
