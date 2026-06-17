@@ -245,8 +245,9 @@ with tabs[1]:
         # Sensitivity
         st.subheader("Sensitivity")
         st.caption("Fair value / share across growth (rows) × discount rate (cols)")
-        g_axis = [growth + d for d in (-0.04, -0.02, 0, 0.02, 0.04)]
-        d_axis = [max(term + 0.01, discount + d) for d in (-0.02, -0.01, 0, 0.01, 0.02)]
+        g_axis = sorted({round(growth + d, 4) for d in (-0.04, -0.02, 0, 0.02, 0.04)})
+        d_axis = sorted({round(max(term + 0.0101, discount + d), 4)
+                         for d in (-0.02, -0.01, 0, 0.01, 0.02)})
         grid = pd.DataFrame(
             [[fundamental.dcf_per_share(base_fcf, gg, dd, term, years, net_debt, shares) for dd in d_axis]
              for gg in g_axis],
