@@ -56,6 +56,29 @@ cross-lens **conflict** (the disagreement is the signal).
 Every run also drops a full JSON snapshot in `runs/` — raw data + timestamps, so
 everything is backtestable later.
 
+## Interactive dashboard
+
+Prefer to *poke at the numbers* instead of reading a text summary? There's a
+browser dashboard:
+
+```bash
+pip install -r requirements.txt    # (includes streamlit)
+streamlit run app.py
+```
+
+Your browser opens a dashboard where you can:
+- enter any ticker and see the four-lens scorecard + agreement banner;
+- **drive the DCF with sliders** — growth, discount rate (WACC), terminal growth,
+  horizon — and watch fair value recompute live, with a growth × discount
+  sensitivity grid;
+- browse the full per-year financials & quality ratios from EDGAR;
+- see price/MA charts, a drawdown chart, and today's valuation vs the stock's own
+  5-year multiple range;
+- compare several tickers side by side;
+- optionally save the run to Airtable with one button.
+
+The dashboard uses the same lenses and free data sources as the CLI.
+
 ## Google Sheets setup (click-by-click)
 
 The standalone script writes to Sheets via a **service account** (no browser

@@ -38,6 +38,9 @@ independent views, not one number** — where the lenses disagree is the signal.
 ```
 hq.py            CLI orchestrator: single ticker OR --watchlist; per-ticker
                  `analyze()` → `persist()` → render; watchlist adds a comparison table
+app.py           Streamlit dashboard: interactive DCF (sliders → live fair value +
+                 sensitivity grid), financials tables, charts, side-by-side compare.
+                 Driven by `fundamental.dcf_per_share` + `fundamental.model_detail`.
 config.py        env, benchmarks, sector→ETF map, thresholds, DCF assumptions
 models.py        LensResult / RunResult dataclasses + stance constants
 

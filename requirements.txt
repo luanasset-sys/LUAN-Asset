@@ -10,3 +10,4 @@ gspread>=6.0             # Google Sheets mirror
 google-auth>=2.30        # service-account auth for Sheets
 
 anthropic>=0.69          # Macro lens: web search + narrative synthesis
+streamlit>=1.40          # interactive dashboard: `streamlit run app.py`

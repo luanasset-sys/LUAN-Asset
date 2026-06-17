@@ -62,20 +62,31 @@ def _safe_div(a, b):
     return a / b
 
 
-def _dcf_fair_value(base_fcf, growth, net_debt, shares):
-    if not base_fcf or not shares or shares <= 0 or base_fcf <= 0:
+def dcf_per_share(base_fcf, growth, discount, terminal_growth, years, net_debt, shares):
+    """Parameterized DCF — the interactive engine the dashboard drives.
+
+    Projects `base_fcf` at `growth` for `years`, discounts at `discount`, adds a
+    Gordon terminal value, subtracts net debt, divides by shares. No clamping —
+    the caller (or a UI slider) owns the assumptions. Returns None if degenerate.
+    """
+    if (not base_fcf or base_fcf <= 0 or not shares or shares <= 0
+            or discount <= terminal_growth):
         return None
-    r, tg = config.DCF_DISCOUNT_RATE, config.DCF_TERMINAL_GROWTH
-    g = max(min(growth if growth is not None else 0.05, 0.20), -0.05)
     pv = 0.0
     fcf = base_fcf
-    for yr in range(1, config.DCF_YEARS + 1):
-        fcf *= (1 + g)
-        pv += fcf / (1 + r) ** yr
-    terminal = fcf * (1 + tg) / (r - tg)
-    pv += terminal / (1 + r) ** config.DCF_YEARS
-    equity = pv - (net_debt or 0)
-    return equity / shares
+    for yr in range(1, int(years) + 1):
+        fcf *= (1 + growth)
+        pv += fcf / (1 + discount) ** yr
+    terminal = fcf * (1 + terminal_growth) / (discount - terminal_growth)
+    pv += terminal / (1 + discount) ** int(years)
+    return (pv - (net_debt or 0)) / shares
+
+
+def _dcf_fair_value(base_fcf, growth, net_debt, shares):
+    """Lens default DCF: clamps growth to a sane band, uses config assumptions."""
+    g = max(min(growth if growth is not None else 0.05, 0.20), -0.05)
+    return dcf_per_share(base_fcf, g, config.DCF_DISCOUNT_RATE,
+                         config.DCF_TERMINAL_GROWTH, config.DCF_YEARS, net_debt, shares)
 
 
 def run(md: MarketData) -> LensResult:
@@ -267,3 +278,89 @@ def run(md: MarketData) -> LensResult:
         **{k: v for k, v in metrics.items()},
     }
     return LensResult("fundamental", verdict, stance, summary, metrics=metrics, raw=raw)
+
+
+def model_detail(md: MarketData) -> dict:
+    """Rich, structured model data for the interactive dashboard.
+
+    Returns the per-year financial/ratio table, the stock's own multiple history
+    (for the valuation-vs-history charts), the live DCF inputs, and the lens
+    result. Everything degrades to None/empty rather than raising.
+    """
+    data = edgar.fundamentals_annual(md.ticker)
+    if "error" in data:
+        return {"error": data["error"]}
+    s = data["series"]
+    years = data["fiscal_years"]
+
+    annual = []
+    for y in years:
+        rev = s["revenue"].get(y)
+        ni = s["net_income"].get(y)
+        gp = s["gross_profit"].get(y)
+        oi = s["operating_income"].get(y)
+        da = s["depreciation_amortization"].get(y)
+        ocf = s["operating_cash_flow"].get(y)
+        capex = s["capex"].get(y)
+        eps = s["eps_diluted"].get(y)
+        debt = (s["total_debt"].get(y, 0) or 0) + (s["current_debt"].get(y, 0) or 0)
+        cash = s["cash"].get(y, 0) or 0
+        equity = s["equity"].get(y)
+        ebitda = (oi + da) if (oi is not None and da is not None) else oi
+        fcf = (ocf - capex) if (ocf is not None and capex is not None) else None
+        nopat = oi * (1 - _TAX) if oi is not None else None
+        invcap = (debt + (equity or 0) - cash) if equity is not None else None
+        annual.append({
+            "Year": y,
+            "Revenue": rev,
+            "Gross Margin": _safe_div(gp, rev),
+            "Operating Margin": _safe_div(oi, rev),
+            "Net Margin": _safe_div(ni, rev),
+            "EBITDA": ebitda,
+            "FCF": fcf,
+            "FCF Margin": _safe_div(fcf, rev),
+            "ROIC": _safe_div(nopat, invcap),
+            "EPS": eps,
+            "Net Debt": debt - cash,
+        })
+
+    # Own multiple history (year, value) for the valuation-vs-history charts.
+    history = {"pe": [], "ev_ebitda": [], "ev_sales": []}
+    for y in years[-5:]:
+        py = _price_at_year_end(md.close, y)
+        eps_y = s["eps_diluted"].get(y)
+        ni_y = s["net_income"].get(y)
+        rev_y = s["revenue"].get(y)
+        oi_y = s["operating_income"].get(y)
+        da_y = s["depreciation_amortization"].get(y)
+        ebitda_y = (oi_y + da_y) if (oi_y is not None and da_y is not None) else oi_y
+        nd_y = ((s["total_debt"].get(y, 0) or 0) + (s["current_debt"].get(y, 0) or 0)
+                - (s["cash"].get(y, 0) or 0))
+        shares_y = _safe_div(ni_y, eps_y) if (eps_y and eps_y > 0) else md.shares_outstanding
+        if py and eps_y and eps_y > 0:
+            history["pe"].append((y, py / eps_y))
+        if py and shares_y and ebitda_y and ebitda_y > 0:
+            ev_y = py * shares_y + nd_y
+            history["ev_ebitda"].append((y, ev_y / ebitda_y))
+            if rev_y:
+                history["ev_sales"].append((y, ev_y / rev_y))
+
+    res = run(md)
+    latest = res.raw.get("latest", {})
+    return {
+        "entity": data.get("entity"),
+        "annual": annual,
+        "history": history,
+        "lens": res,
+        "dcf_inputs": {
+            "base_fcf": latest.get("fcf"),
+            "net_debt": latest.get("net_debt"),
+            "shares": latest.get("shares"),
+            "rev_cagr": res.metrics.get("Revenue CAGR 3y"),
+        },
+        "current_multiples": {
+            "PE": res.metrics.get("PE"),
+            "EV/EBITDA": res.metrics.get("EV EBITDA"),
+            "EV/Sales": res.metrics.get("EV Sales"),
+        },
+    }
