@@ -13,6 +13,7 @@ Decision-support only — not financial advice.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -37,6 +38,23 @@ def pct(x, dp=1):
 
 def mult(x, dp=1):
     return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.{dp}f}x"
+
+
+# ── saved deep-dive reports ──────────────────────────────────────────────────
+# Reports are written into reports/<TICKER>.md (by Claude in a Claude Code
+# session, or by the optional API pipeline) and displayed here — so viewing a
+# report needs no API key at all.
+REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+
+
+def load_saved_report(ticker: str) -> str | None:
+    if not ticker:
+        return None
+    for name in (f"{ticker.upper()}.md", f"{ticker.lower()}.md", f"{ticker}.md"):
+        p = REPORTS_DIR / name
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    return None
 
 
 def big(x):
@@ -299,60 +317,73 @@ with tabs[1]:
         st.caption("⚠️ A deliberately simple DCF on free annual data — best used for the *reverse* read "
                    "(what's priced in) and *relative* sensitivity, not as a literal price target.")
 
-# ── TAB 2: Research Report (Claude-written) ──────────────────────────────────
+# ── TAB 2: Research Report ───────────────────────────────────────────────────
 with tabs[2]:
     st.subheader(f"Equity research report — {company} ({ticker})")
-    if not llm.available():
-        st.info("The full written report runs on the Anthropic API. Add `ANTHROPIC_API_KEY` to your "
-                "`.env` (with a little account credit), save, and restart — then generate it here.")
+    saved = load_saved_report(ticker)
+    if saved:
+        st.caption("📄 Saved deep dive — written in your Claude Code session (no API key or credit "
+                   "needed). Ask Claude to refresh it any time.")
+        st.download_button("⬇️ Download report (.md)", saved,
+                           file_name=f"{ticker}_deep_dive.md", mime="text/markdown")
+        st.divider()
+        st.markdown(saved)
     else:
-        st.caption("Claude runs a multi-pass pipeline — web-research dossiers, then "
-                   "section-by-section synthesis grounded in your DCF/WACC model — to produce an "
-                   "institutional-depth deep dive: the central frame, every stock-moving lever, "
-                   "policy by segment, macro, a levels-vs-derivatives sustainability debate, "
-                   "scenarios, dated catalysts, bottom line, and sources. Takes ~2–4 minutes and "
-                   "uses your Anthropic key.")
-        key = f"report::{ticker}"
-        if st.button("📝 Generate deep-dive report", type="primary"):
-            wi = detail.get("wacc", {}) or {}
-            wv = wi.get("wacc") or 0.085
-            di = detail.get("dcf_inputs", {})
-            impl_ctx = fundamental.implied_growth(md.price, di.get("base_fcf"), wv, 0.03, 10,
-                                                  di.get("net_debt") or 0, di.get("shares"), True)
-            model_ctx = (
-                f"Price {money(md.price,2)}; market cap {big(md.market_cap)}; sector {md.sector}. "
-                f"Bottom-up WACC {pct(wv)} (CAPM cost of equity {pct(wi.get('ke'))}, after-tax cost "
-                f"of debt {pct(wi.get('kd_after_tax'))}, beta {wi.get('beta')}). "
-                f"Revenue {big(f.metrics.get('Revenue TTM'))}; revenue 3y CAGR "
-                f"{pct(f.metrics.get('Revenue CAGR 3y'))}; EPS 3y CAGR {pct(f.metrics.get('EPS CAGR 3y'))}. "
-                f"Margins gross/op/net {pct(f.metrics.get('Gross Margin'))}/"
-                f"{pct(f.metrics.get('Operating Margin'))}/{pct(f.metrics.get('Net Margin'))}; "
-                f"FCF margin {pct(f.metrics.get('FCF Margin'))}; ROIC {pct(f.metrics.get('ROIC'))}; "
-                f"net debt/EBITDA {mult(f.metrics.get('Net Debt to EBITDA'))}. "
-                f"Multiples: P/E {mult(f.metrics.get('PE'))} ({pct(f.metrics.get('PE 5y Pctile'),0)} of "
-                f"its own 5y range), EV/EBITDA {mult(f.metrics.get('EV EBITDA'))}, EV/Sales "
-                f"{mult(f.metrics.get('EV Sales'))}. Backlog/RPO {big(detail.get('backlog',{}).get('latest'))}. "
-                f"DCF fair value bear/base/bull {money(f.metrics.get('Bear FV'),2)} / "
-                f"{money(f.metrics.get('Base FV'),2)} / {money(f.metrics.get('Bull FV'),2)} "
-                f"(vs price {money(md.price,2)}). Reverse-DCF: today's price implies a starting ~"
-                f"{pct(impl_ctx,1) if impl_ctx is not None else 'extreme/off-model'} FCF growth "
-                f"fading to terminal over 10 years. Lens verdicts — fundamental: {f.verdict}; "
-                f"technical: {t.verdict} ({t.summary}); Markov regime: {mk.verdict} ({mk.summary})."
-            )
-            meta = {"company": company, "ticker": ticker, "sector": md.sector,
-                    "asof": datetime.now(timezone.utc).date().isoformat()}
-            with st.status("Starting research pipeline…", expanded=True) as status:
-                report = llm.deep_dive_report(meta, model_ctx,
-                                              progress=lambda m: status.update(label=m))
-                ok = bool(report) and not report.lstrip().startswith("__ERROR__")
-                status.update(label="Deep dive complete ✔" if ok else "Pipeline error — see below",
-                              state="complete" if ok else "error", expanded=False)
-            st.session_state[key] = report or ("Report unavailable — check that your Anthropic key "
-                                               "is set and the account has credit, then retry.")
-        if st.session_state.get(key):
-            st.download_button("⬇️ Download report (.md)", st.session_state[key],
-                               file_name=f"{ticker}_deep_dive.md", mime="text/markdown")
-            st.markdown(st.session_state[key])
+        st.info(
+            f"**No saved deep-dive report for {ticker} yet.**\n\n"
+            f"These institutional-depth reports are written for you in your **Claude Code** "
+            f"session — no Anthropic API and no extra cost — and saved to "
+            f"`reports/{ticker.upper()}.md`, which this tab displays automatically.\n\n"
+            f"👉 In Claude Code, just say: *“write the deep-dive report for {ticker}”*. "
+            f"After Claude saves it and you pull, refresh this page to read it here.")
+
+    # Optional: generate live via the paid Anthropic API (only if a key is set).
+    if llm.available():
+        with st.expander("⚙️ Or generate live via the Anthropic API (uses account credit)"):
+            st.caption("Multi-pass pipeline: web-research dossiers, then section-by-section "
+                       "synthesis grounded in your DCF/WACC model. ~2–4 minutes; spends credit.")
+            key = f"report::{ticker}"
+            if st.button("📝 Generate deep-dive report", type="primary"):
+                wi = detail.get("wacc", {}) or {}
+                wv = wi.get("wacc") or 0.085
+                di = detail.get("dcf_inputs", {})
+                impl_ctx = fundamental.implied_growth(md.price, di.get("base_fcf"), wv, 0.03, 10,
+                                                      di.get("net_debt") or 0, di.get("shares"), True)
+                model_ctx = (
+                    f"Price {money(md.price,2)}; market cap {big(md.market_cap)}; sector {md.sector}. "
+                    f"Bottom-up WACC {pct(wv)} (CAPM cost of equity {pct(wi.get('ke'))}, after-tax cost "
+                    f"of debt {pct(wi.get('kd_after_tax'))}, beta {wi.get('beta')}). "
+                    f"Revenue {big(f.metrics.get('Revenue TTM'))}; revenue 3y CAGR "
+                    f"{pct(f.metrics.get('Revenue CAGR 3y'))}; EPS 3y CAGR {pct(f.metrics.get('EPS CAGR 3y'))}. "
+                    f"Margins gross/op/net {pct(f.metrics.get('Gross Margin'))}/"
+                    f"{pct(f.metrics.get('Operating Margin'))}/{pct(f.metrics.get('Net Margin'))}; "
+                    f"FCF margin {pct(f.metrics.get('FCF Margin'))}; ROIC {pct(f.metrics.get('ROIC'))}; "
+                    f"net debt/EBITDA {mult(f.metrics.get('Net Debt to EBITDA'))}. "
+                    f"Multiples: P/E {mult(f.metrics.get('PE'))} ({pct(f.metrics.get('PE 5y Pctile'),0)} of "
+                    f"its own 5y range), EV/EBITDA {mult(f.metrics.get('EV EBITDA'))}, EV/Sales "
+                    f"{mult(f.metrics.get('EV Sales'))}. Backlog/RPO {big(detail.get('backlog',{}).get('latest'))}. "
+                    f"DCF fair value bear/base/bull {money(f.metrics.get('Bear FV'),2)} / "
+                    f"{money(f.metrics.get('Base FV'),2)} / {money(f.metrics.get('Bull FV'),2)} "
+                    f"(vs price {money(md.price,2)}). Reverse-DCF: today's price implies a starting ~"
+                    f"{pct(impl_ctx,1) if impl_ctx is not None else 'extreme/off-model'} FCF growth "
+                    f"fading to terminal over 10 years. Lens verdicts — fundamental: {f.verdict}; "
+                    f"technical: {t.verdict} ({t.summary}); Markov regime: {mk.verdict} ({mk.summary})."
+                )
+                meta = {"company": company, "ticker": ticker, "sector": md.sector,
+                        "asof": datetime.now(timezone.utc).date().isoformat()}
+                with st.status("Starting research pipeline…", expanded=True) as status:
+                    report = llm.deep_dive_report(meta, model_ctx,
+                                                  progress=lambda m: status.update(label=m))
+                    ok = bool(report) and not report.lstrip().startswith("__ERROR__")
+                    status.update(label="Deep dive complete ✔" if ok else "Pipeline error — see below",
+                                  state="complete" if ok else "error", expanded=False)
+                st.session_state[key] = report or ("Report unavailable — check that your Anthropic key "
+                                                   "is set and the account has credit, then retry.")
+            if st.session_state.get(key):
+                st.download_button("⬇️ Download (.md)", st.session_state[key],
+                                   file_name=f"{ticker}_deep_dive.md", mime="text/markdown",
+                                   key="api_dl")
+                st.markdown(st.session_state[key])
 
 # ── TAB 3: Macro & News ──────────────────────────────────────────────────────
 with tabs[3]:

@@ -68,9 +68,12 @@ streamlit run app.py
 
 Your browser opens a dashboard where you can:
 - enter any ticker and see the four-lens scorecard + agreement banner;
-- **get a full Claude-written equity research report** (business & moat, valuation &
-  fair-value range, bull/bear & risks, macro/policy/catalysts — grounded in the
-  computed model + live web search; needs the Anthropic key);
+- **read institutional-depth deep-dive reports** in the Research Report tab —
+  saved markdown in `reports/<TICKER>.md` (frame, every stock-moving lever, policy
+  by segment, macro, a levels-vs-derivatives sustainability debate, scenarios,
+  dated catalysts, sources). These are written in a **Claude Code** session, so
+  **viewing them needs no Anthropic API key or credit**; see `reports/README.md`.
+  An optional live-generate button appears only if an API key is configured;
 - **drive a multi-stage DCF with sliders** (stage-1 growth that fades to terminal,
   WACC, horizon) and watch fair value recompute live, with a sensitivity grid;
 - see the **bottom-up WACC** built per stock (CAPM cost of equity from the live
